@@ -12,36 +12,31 @@ permissions:
 
 jobs:
   build:
-    name: Build Debug APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Setup JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
           cache: gradle
 
-      - name: Set up Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
         run: |
-          sdkmanager "platform-tools"
-          sdkmanager "platforms;android-36"
-          sdkmanager "build-tools;36.0.0"
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Make Gradle executable
-        run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-          fi
+        run: chmod +x gradlew
 
-      - name: Remove Google Secrets plugin
+      - name: Remove Google Secrets configuration
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -49,84 +44,47 @@ jobs:
 
           root = Path(".")
 
-          def remove_block(text, name):
-              pattern = re.compile(
-                  rf'(?ms)^[ \t]*{re.escape(name)}[ \t]*\{{.*?^[ \t]*\}}[ \t]*$'
-              )
-              return pattern.sub("", text)
+          for path in root.rglob("*"):
+              if not path.is_file():
+                  continue
 
-          for path in root.rglob("*.gradle.kts"):
-              text = path.read_text()
+              if path.suffix not in (".gradle", ".kts", ".toml"):
+                  continue
+
+              try:
+                  text = path.read_text()
+              except:
+                  continue
 
               text = re.sub(
-                  r'(?m)^[ \t]*alias\(libs\.plugins\.secrets\)[ \t]*\r?\n?',
+                  r'(?m)^[ \t]*alias\(libs\.plugins\.secrets\).*?\n',
                   '',
                   text
               )
 
               text = re.sub(
-                  r'(?m)^[ \t]*id\(["\']com\.google\.android\.secrets["\'][^\r\n]*\r?\n?',
+                  r'(?ms)^[ \t]*secrets[ \t]*\{.*?^[ \t]*\}',
                   '',
                   text
               )
 
-              text = remove_block(text, "secrets")
-              text = remove_block(text, "googleSecrets")
+              text = re.sub(
+                  r'(?m)^.*com\.google\.android\.secrets.*\n?',
+                  '',
+                  text
+              )
+
+              text = re.sub(
+                  r'(?m)^.*google\.devtools\.secrets.*\n?',
+                  '',
+                  text
+              )
 
               path.write_text(text)
-
-          for path in root.rglob("*.gradle"):
-              text = path.read_text()
-
-              text = re.sub(
-                  r'(?m)^[ \t]*apply[ \t]+plugin:[ \t]*["\']com\.google\.android\.secrets["\'][^\r\n]*\r?\n?',
-                  '',
-                  text
-              )
-
-              text = remove_block(text, "secrets")
-              text = remove_block(text, "googleSecrets")
-
-              path.write_text(text)
-
-          toml = root / "gradle" / "libs.versions.toml"
-
-          if toml.exists():
-              text = toml.read_text()
-
-              text = re.sub(
-                  r'(?m)^[ \t]*secrets[ \t]*=[^\r\n]*\r?\n?',
-                  '',
-                  text
-              )
-
-              toml.write_text(text)
           PY
 
-      - name: Check remaining Secrets configuration
-        run: |
-          if grep -RniE \
-            'alias\(libs\.plugins\.secrets\)|google\.devtools\.secrets|com\.google\.android\.secrets|^[[:space:]]*secrets[[:space:]]*\{' \
-            --include='*.gradle' \
-            --include='*.gradle.kts' \
-            .; then
-            echo "Google Secrets configuration masih ditemukan."
-            exit 1
-          fi
-
-          echo "Tidak ada konfigurasi Google Secrets."
-
       - name: Build Debug APK
-        run: |
-          if [ -f "./gradlew" ]; then
-            ./gradlew :app:assembleDebug --no-daemon --stacktrace
-          else
-            gradle :app:assembleDebug --no-daemon --stacktrace
-          fi
-
-      - name: Find APK
-        run: |
-          find app/build/outputs/apk -type f -name "*.apk" -print
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
