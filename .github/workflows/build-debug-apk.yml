@@ -5,9 +5,13 @@ on:
   push:
     branches: ["main"]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,18 +21,162 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.3.1"
 
+      - name: Remove Google Secrets configuration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def remove_block(text, keyword):
+              while True:
+                  match = re.search(
+                      rf'(?m)^[ \t]*{re.escape(keyword)}[ \t]*\{{',
+                      text
+                  )
+
+                  if not match:
+                      break
+
+                  start = match.start()
+                  brace_start = text.find("{", match.start())
+
+                  depth = 0
+                  end = None
+                  in_string = False
+                  escape = False
+
+                  for i in range(brace_start, len(text)):
+                      c = text[i]
+
+                      if escape:
+                          escape = False
+                          continue
+
+                      if c == "\\" and in_string:
+                          escape = True
+                          continue
+
+                      if c == '"':
+                          in_string = not in_string
+                          continue
+
+                      if in_string:
+                          continue
+
+                      if c == "{":
+                          depth += 1
+                      elif c == "}":
+                          depth -= 1
+                          if depth == 0:
+                              end = i + 1
+                              break
+
+                  if end is None:
+                      raise RuntimeError(
+                          f"Blok {keyword} ditemukan tetapi penutupnya tidak ditemukan."
+                      )
+
+                  newline = text.find("\n", end)
+
+                  if newline == -1:
+                      text = text[:start]
+                  else:
+                      text = text[:start] + text[newline + 1:]
+
+              return text
+
+          for path in Path(".").rglob("*"):
+              if not path.is_file():
+                  continue
+
+              if path.suffix not in {".gradle", ".kts", ".toml"}:
+                  continue
+
+              try:
+                  text = path.read_text()
+              except Exception:
+                  continue
+
+              original = text
+
+              text = re.sub(
+                  r'(?m)^[ \t]*alias\(libs\.plugins\.secrets\).*?\n?',
+                  '',
+                  text
+              )
+
+              text = re.sub(
+                  r'(?m)^[ \t]*id\(["\']com\.google\.android\.secrets["\'][^\n]*\n?',
+                  '',
+                  text
+              )
+
+              text = re.sub(
+                  r'(?m)^.*com\.google\.devtools\.secrets.*\n?',
+                  '',
+                  text
+              )
+
+              text = re.sub(
+                  r'(?m)^.*com\.google\.android\.secrets.*\n?',
+                  '',
+                  text
+              )
+
+              text = remove_block(text, "secrets")
+              text = remove_block(text, "googleSecrets")
+
+              if path.name == "libs.versions.toml":
+                  text = re.sub(
+                      r'(?m)^[ \t]*secrets[ \t]*=.*\n?',
+                      '',
+                      text
+                  )
+
+              if text != original:
+                  path.write_text(text)
+
+          print("Google Secrets configuration berhasil dibersihkan.")
+          PY
+
+      - name: Verify Secrets removed
+        run: |
+          echo "Memeriksa konfigurasi Secrets..."
+
+          if grep -RniE \
+            'alias\(libs\.plugins\.secrets\)|google\.devtools\.secrets|com\.google\.android\.secrets|^[[:space:]]*secrets[[:space:]]*\{' \
+            --include='*.gradle' \
+            --include='*.gradle.kts' \
+            .; then
+
+            echo "ERROR: Konfigurasi Google Secrets masih ditemukan."
+            exit 1
+          fi
+
+          echo "OK: Konfigurasi Google Secrets sudah bersih."
+
       - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon
+        run: |
+          gradle :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      - name: Find APK
+        run: |
+          echo "APK hasil build:"
+          find app/build/outputs -type f -name "*.apk" -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: CodeNest-debug-v1.0
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
           retention-days: 7
