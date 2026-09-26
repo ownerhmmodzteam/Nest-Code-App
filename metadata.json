@@ -1,0 +1,6 @@
+{
+  "name": "CodeNest",
+  "description": "Modern programming education platform with interactive roadmaps, coding playground, quizzes, and projects.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
