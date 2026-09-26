@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Setup JDK 21
@@ -30,8 +30,14 @@ jobs:
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo
+          echo "Android SDK:"
           ls -la "$ANDROID_HOME"
+          echo
+          echo "Platforms:"
           ls -la "$ANDROID_HOME/platforms" || true
+          echo
+          echo "Build Tools:"
           ls -la "$ANDROID_HOME/build-tools" || true
 
       - name: Make Gradle executable
@@ -46,38 +52,100 @@ jobs:
 
           root = Path(".")
 
-          def remove_block(text, name):
-              pattern = re.compile(
-                  rf'(?ms)^[ \t]*{re.escape(name)}[ \t]*\{{.*?^[ \t]*\}}[ \t]*'
-              )
-              return pattern.sub("", text)
+          def remove_block(text, keyword):
+              while True:
+                  match = re.search(
+                      rf'(?m)^[ \t]*{re.escape(keyword)}[ \t]*\{{',
+                      text
+                  )
+
+                  if not match:
+                      break
+
+                  start = match.start()
+                  brace_start = text.find("{", match.start())
+
+                  depth = 0
+                  end = None
+                  in_string = False
+                  escape = False
+
+                  for i in range(brace_start, len(text)):
+                      c = text[i]
+
+                      if escape:
+                          escape = False
+                          continue
+
+                      if c == "\\" and in_string:
+                          escape = True
+                          continue
+
+                      if c == '"':
+                          in_string = not in_string
+                          continue
+
+                      if in_string:
+                          continue
+
+                      if c == "{":
+                          depth += 1
+
+                      elif c == "}":
+                          depth -= 1
+
+                          if depth == 0:
+                              end = i + 1
+                              break
+
+                  if end is None:
+                      raise RuntimeError(
+                          f"Blok {keyword} ditemukan tetapi penutupnya tidak ditemukan."
+                      )
+
+                  newline = text.find("\n", end)
+
+                  if newline == -1:
+                      text = text[:start]
+                  else:
+                      text = text[:start] + text[newline + 1:]
+
+              return text
 
           for path in root.rglob("*"):
               if not path.is_file():
                   continue
 
-              if path.suffix not in (".gradle", ".kts", ".toml"):
+              if path.suffix not in {".gradle", ".kts", ".toml"}:
                   continue
 
               try:
                   text = path.read_text()
-              except:
+              except Exception:
                   continue
 
+              original = text
+
               text = re.sub(
-                  r'(?m)^[ \t]*alias\(libs\.plugins\.secrets\)[ \t]*\r?\n?',
+                  r'(?m)^[ \t]*alias\(libs\.plugins\.secrets\).*?\n?',
                   '',
                   text
               )
 
               text = re.sub(
-                  r'(?m)^.*com\.google\.android\.secrets.*\r?\n?',
+                  r'(?m)^[ \t]*id\(["\']com\.google\.android\.secrets["\'][^\n]*\n?',
                   '',
                   text
               )
 
               text = re.sub(
-                  r'(?m)^.*google\.devtools\.secrets.*\r?\n?',
+                  r'(?m)^.*com\.google\.devtools\.secrets.*\n?',
+                  '',
+                  text
+              )
+
+              text = re.sub(
+                  r'(?m)^.*com\.google\.android\.secrets.*\n?',
                   '',
                   text
               )
@@ -85,32 +153,36 @@ jobs:
               text = remove_block(text, "secrets")
               text = remove_block(text, "googleSecrets")
 
-              path.write_text(text)
+              if path.name == "libs.versions.toml":
+                  text = re.sub(
+                      r'(?m)^[ \t]*secrets[ \t]*=.*\n?',
+                      '',
+                      text
+                  )
 
-          toml = root / "gradle" / "libs.versions.toml"
+              if text != original:
+                  path.write_text(text)
 
-          if toml.exists():
-              text = toml.read_text()
-              text = re.sub(
-                  r'(?m)^[ \t]*secrets[ \t]*=.*\r?\n?',
-                  '',
-                  text
-              )
-              toml.write_text(text)
+          print("Google Secrets configuration berhasil dibersihkan.")
           PY
 
       - name: Verify Secrets removed
         run: |
+          echo "Memeriksa konfigurasi Secrets..."
+
           if grep -RniE \
             'alias\(libs\.plugins\.secrets\)|google\.devtools\.secrets|com\.google\.android\.secrets|^[[:space:]]*secrets[[:space:]]*\{' \
             --include='*.gradle' \
             --include='*.gradle.kts' \
             .; then
-            echo "Secrets configuration masih ditemukan."
+
+            echo
+            echo "ERROR: Konfigurasi Google Secrets masih ditemukan."
             exit 1
           fi
 
-          echo "Secrets configuration bersih."
+          echo
+          echo "OK: Konfigurasi Google Secrets sudah bersih."
 
       - name: Build Debug APK
         run: |
@@ -118,9 +190,14 @@ jobs:
             --no-daemon \
             --stacktrace
 
-      - name: Find APK
+      - name: Find generated APK
         run: |
-          find . -type f -name "*.apk" -print
+          echo "Mencari APK..."
+
+          find . \
+            -type f \
+            -name "*.apk" \
+            -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
